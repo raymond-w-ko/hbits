@@ -1,14 +1,13 @@
 -- adapted from http://en.wikipedia.org/wiki/SHA-2
 
--- TODO: remove everything except function sha256
-module SHA256 (sha256, k) where
+module SHA256 (sha256) where
 
 import Data.Word
 import Data.Char
+import Data.Bits
 import qualified Data.Vector.Unboxed as Vector
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString as S
-import qualified Data.ByteString.Char8 as S8
 import qualified Numeric
 
 -- Note 1: All variables are 32 bit unsigned integers and addition is
@@ -57,20 +56,40 @@ k = Vector.fromList
   0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
   ]
 
-hexString = S.concatMap $ \c -> S8.pack $ pad $ Numeric.showHex c []
+hexString = S.concatMap $ \c -> BC.pack $ pad $ Numeric.showHex c []
             where
               pad [x] = ['0', x]
               pad s = s
 
+int64ToByteString n =
+  go BC.empty n 8
+  where
+    go acc n roundsLeft
+       | roundsLeft == 0 = acc
+       | otherwise = go (BC.cons (chr (n .&. 0xFF)) acc)
+                        (n `shiftR` 8)
+                        (roundsLeft - 1)
+
+-- Pre-processing:
+--
+-- append the bit '1' to the message
+--
+-- append k bits '0', where k is the minimum number >= 0 such that the
+-- resulting message length (modulo 512 in bits) is 448.
+--
+-- append length of message (before pre-processing), in bits, as 64-bit big-endian integer
 preprocess :: BC.ByteString -> BC.ByteString
 preprocess bs =
-  let numBits = 448 - (((BC.length bs) * 8) `mod` 512)
-      numBytes = numBits `div` 8
+  let msgLenInBits = (BC.length bs) * 8
+      modLen = (msgLenInBits + 1) `mod` 512
+      moreBits = if modLen <= 448
+                 then 448 - modLen
+                 else (modLen - 448) + 448
+      moreBytes = (moreBits + 1) `div` 8
       prefix = (BC.singleton (chr 0xA0))
-      suffix = (BC.replicate (numBytes - 1) (chr 0x00))
-  in BC.append bs (BC.append prefix suffix)
+      suffix = (BC.replicate (moreBytes - 1) (chr 0x00))
+  in foldr1 BC.append [bs, (BC.append prefix suffix), (int64ToByteString msgLenInBits)]
 
-sha256 bs =
-  let preprocessed = preprocess bs
-      final = preprocessed
-  in BC.unpack $ hexString final
+sha256 msg =
+  let finalmsg = preprocess msg 
+  in BC.unpack $ hexString finalmsg
